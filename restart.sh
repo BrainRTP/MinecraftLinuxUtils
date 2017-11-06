@@ -26,7 +26,7 @@ screen -S bungee -X eval 'stuff "end"\015'
 
 for ((i=1;i<=${#array[@]};i++));
 do
-    if screen -ls | grep ${array[i]}; then
+    if screen -list | grep -q ${array[i]}; then
         screen -S ${array[i]} -X eval 'stuff "stop"\015'
         complite+=(${array[i]})
         echo "Сервер ${array[i]} перезагружен" >> restart_log.txt
