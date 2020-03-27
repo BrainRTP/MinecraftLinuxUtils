@@ -1,3 +1,11 @@
+# Закидываете этот файл куда-нибудь и вызываете его для каждого start.sh каждого сервера такой командой:
+# bash /home/scripts/start.sh ${verion} ${name} ${ram} $PWD
+# Например:
+# ver="1.15.2"
+# name="Main"
+# ram="4G"
+# bash /home/scripts/start.sh ${ver} ${name} ${ram} $PWD
+
 #!/bin/bash
 Reset='\033[0m'
 Green='\033[0;32m'
