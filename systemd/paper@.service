@@ -1,0 +1,52 @@
+# Шаблонный юнит: один файл на все сервера.
+# Имя после @ это имя папки сервера в /home/mc.
+#
+#   install -m 644 paper@.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now paper@mainServer
+#   journalctl -u paper@mainServer -f
+#
+# Консоль сервера здесь недоступна: юнит запускает процесс без терминала.
+# Команды шлем через RCON, либо запускаем сервера в tmux через mcstart.sh.
+# Чтобы получить и автозапуск, и консоль, ExecStart можно завернуть в tmux new-session -d.
+
+[Unit]
+Description=Minecraft server %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mc
+Group=mc
+WorkingDirectory=/home/mc/%i
+
+# Ядро обновляется перед каждым стартом. Версия берется из файла version в папке сервера.
+ExecStartPre=/bin/bash -c '/home/mc/scripts/mc-jar.sh paper "$(cat /home/mc/%i/version)" /home/mc/%i'
+ExecStart=/bin/bash /home/mc/%i/start.sh
+
+Restart=on-failure
+RestartSec=10
+# Больше пяти падений за пять минут - значит дело не в случайности, перестаем дергать.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# Останавливаем мягко: серверу нужно время сохранить мир.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# Ограничения. Стоят три строки, а закрывают целый класс проблем,
+# если какой-нибудь плагин окажется не тем, чем представлялся.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/home/mc
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

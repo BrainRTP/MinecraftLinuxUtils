@@ -1,51 +1,82 @@
 #!/bin/bash
-reload_time=10;
-dt=$(date '+%d/%m/%Y %H:%M:%S');
-echo "===== $dt =====" >> restart_log.txt
-declare -a array
-array=([1]=auth [2]=hub-1 [3]=survival)
-complite=()
-bad=()
+# Перезапуск всех серверов из servers.conf с предупреждением игроков.
+# Сервера останавливаются в обратном порядке, прокси последней, чтобы игроков
+# не выкидывало по таймауту.
+#
+# В cron ежедневно в 03:15:
+#   15 3 * * * /home/mc/scripts/restart.sh >> /home/mc/scripts/restart.log 2>&1
+#
+# У cron урезанный PATH, поэтому в crontab указываем полный путь до скрипта.
 
-for ((i=$reload_time;i>=1;i--));
-do
-    if [ ${i} = "1" ]; then
-        screen -S bungee -X eval 'stuff "alert Перезапуск сервера через '${i}' секунду"\015'
-        echo "Перезапуск сервера через ${i} секунду"
-        sleep 1s
+set -uo pipefail
+
+SESSION="${MC_SESSION:-minecraft}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF="$SCRIPT_DIR/servers.conf"
+WARN_AT="60 45 30 15 10 5 4 3 2 1"   # на каких секундах предупреждать
+TOTAL=60                              # сколько всего ждать
+
+command -v tmux >/dev/null || { echo "ОШИБКА: нет tmux"; exit 1; }
+[ -f "$CONF" ] || { echo "ОШИБКА: нет $CONF"; exit 1; }
+tmux has-session -t "$SESSION" 2>/dev/null || { echo "ОШИБКА: сессия $SESSION не запущена"; exit 1; }
+
+mapfile -t NAMES < <(grep -vE '^\s*(#|$)' "$CONF" | cut -d: -f1)
+[ ${#NAMES[@]} -gt 0 ] || { echo "ОШИБКА: в $CONF нет серверов"; exit 1; }
+
+echo "===== $(date '+%d.%m.%Y %H:%M:%S') ====="
+
+send() {   # send <окно> <команда>
+    tmux send-keys -t "$SESSION:$1" "$2" Enter 2>/dev/null
+}
+
+alive() {
+    tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"
+}
+
+plural() {
+    case "$1" in
+        1|21|31|41|51) echo "секунду" ;;
+        2|3|4|22|23|24|32|33|34|42|43|44|52|53|54) echo "секунды" ;;
+        *) echo "секунд" ;;
+    esac
+}
+
+for (( i = TOTAL; i > 0; i-- )); do
+    if [[ " $WARN_AT " == *" $i "* ]]; then
+        MSG="Перезапуск сервера через $i $(plural "$i")"
+        for name in "${NAMES[@]}"; do
+            alive "$name" && send "$name" "say $MSG"
+        done
+        echo "$MSG"
+    fi
+    sleep 1
+done
+
+for name in "${NAMES[@]}"; do
+    alive "$name" && send "$name" "say Перезапуск!"
+done
+sleep 1
+
+# Обратный порядок: сначала сервера, прокси в конце.
+DONE=()
+MISSING=()
+for (( i = ${#NAMES[@]} - 1; i >= 0; i-- )); do
+    name="${NAMES[$i]}"
+    if alive "$name"; then
+        send "$name" "stop"
+        DONE+=("$name")
+        echo "Останавливаю $name"
+        sleep 3
     else
-        screen -S bungee -X eval 'stuff "alert Перезапуск сервера через '${i}' секунд"\015'
-        echo "Перезапуск сервера через ${i} секунд"
-        sleep 1s
+        MISSING+=("$name")
     fi
 done
-screen -S bungee -X eval 'stuff "alert Перезапуск!"\015'
-echo "Перезапуск!"
-sleep 1s
-screen -S bungee -X eval 'stuff "end"\015'
 
-for ((i=1;i<=${#array[@]};i++));
-do
-    if screen -list | grep -q ${array[i]}; then
-        screen -S ${array[i]} -X eval 'stuff "stop"\015'
-        complite+=(${array[i]})
-        echo "Сервер ${array[i]} перезагружен" >> restart_log.txt
-        echo -e "\033[32mСервер \033[36m${array[i]} \033[32mперезагружен\033[0m"
-    else
-        bad+=(${array[i]})
-        echo "(!) Сервер ${array[i]} не найден " >> restart_log.txt
-        echo -e "\033[32mСервер \033[36m${array[i]} \033[31mне найден!\033[0m"
-    fi
-done
+echo "-------- Сводка --------"
+echo "Остановлены: ${DONE[*]:-нет}"
+[ ${#MISSING[@]} -gt 0 ] && echo "Не найдены:  ${MISSING[*]}"
 
-echo "======== Сводка: ========"
-echo -e "\033[32m Сервера успешно перезагружены: \033[36m${complite[@]}\033[0m"
-echo "-------- Сводка: --------" >> restart_log.txt
-echo "Сервера успешно перезагружены: ${complite[@]}" >> restart_log.txt
-
-if  [ ${#bad[@]} != "0" ]; then
-    echo -e "\033[31m Сервера не найдены: \033[36m${bad[@]}\033[0m"
-    echo "Сервера не найдены: ${bad[@]}" >> restart_log.txt
-fi
-
-echo " " >> restart_log.txt
+# Циклы в start.sh поднимут сервера сами, если выход был не штатным.
+# При RESTART_ON_CLEAN_STOP=false команда stop завершает цикл, и тогда нужен mcstart.sh:
+echo
+echo "Если в start.sh стоит RESTART_ON_CLEAN_STOP=false, поднимите сервера через mcstart.sh"
