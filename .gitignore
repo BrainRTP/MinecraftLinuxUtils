@@ -1,0 +1,17 @@
+.idea/
+*.iml
+
+# Конфиги с секретами. В репозитории только .example
+ssh-notify.conf
+*.secret
+forwarding.secret
+
+# Локальные артефакты
+*.jar
+*.log
+audit_*/
+audit_*.tar.gz
+backup/
+
+/backup-exclude.conf
+.backupignore

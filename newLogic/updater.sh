@@ -1,35 +1,31 @@
 #!/bin/bash
-if [ -z $1 ] ; then
-    echo "Укажите версию ядра"
-    exit
+# Обертка над mc-jar.sh, сохраняет старый интерфейс: updater.sh <версия>.
+# Качает свежий Paper в текущую папку под именем paper.jar.
+#
+# Старая версия этого скрипта ходила в papermc.io/api/v1, которого больше нет.
+# Вся работа теперь в mc-jar.sh, здесь только совместимость со старыми вызовами.
+
+set -euo pipefail
+
+VERSION="${1:-}"
+if [ -z "$VERSION" ]; then
+    echo "Использование: $0 <версия>   например: $0 26.2" >&2
+    exit 1
 fi
-mc_version=$1
 
-Reset='\033[0m'
-Green='\033[0;32m'
-Red='\033[0;31m'
-Yellow='\033[0;33m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MC_JAR="$SCRIPT_DIR/../mc-jar.sh"
 
-current_build=$(cat check.txt 2>/dev/null)
-last_build="$(curl -s https://papermc.io/api/v1/paper/${mc_version}/latest | jq  -r '.build')"
-let "missed_updates = last_build - current_build"
+[ -x "$MC_JAR" ] || [ -f "$MC_JAR" ] || { echo "ОШИБКА: не найден $MC_JAR" >&2; exit 1; }
 
-# last_build=$(curl -s "https://papermc.io/api/v1/paper/${mc_version}/latest" | awk -F'[:}]' '{print $(NF-1)}')
+# Общий каталог кладем рядом с сервером, чтобы скрипт работал и без прав на /opt.
+export MC_JARS_DIR="${MC_JARS_DIR:-$PWD/.jars}"
 
-if [ -f "check.txt" ]; then
-	if [ $last_build != $current_build ]
-	then
-		echo -e "${Red}Найдено обновления ядра ${Reset}PaperSpigot ${mc_version}${Yellow}#${last_build} ${Red} (пропущено ${missed_updates} обновлений) ${Reset}"
-		mv paper.jar paper_${last_build}.jar
-		wget -q --show-progress --progress=bar -O paper.jar https://papermc.io/api/v1/paper/${mc_version}/latest/download
-		echo -e "${Green}Ядро обновлено. ${Reset}"
-		echo $last_build > check.txt
-		else
-			echo -e "${Green}Обновлений ядра нет. ${Reset}"
-	fi
-else
-	echo -e "${Red}Ядро не найдено. Скачиваю последний билд. ${Reset}PaperSpigot ${mc_version}${Yellow}#${last_build} ${Reset}" 
-	wget -q --show-progress --progress=bar -O paper.jar https://papermc.io/api/v1/paper/${mc_version}/latest/download
-	echo -e "${Green}Ядро обновлено. ${Reset}"
-	echo $last_build > check.txt
-fi
+bash "$MC_JAR" paper "$VERSION"
+
+LATEST="$(find "$MC_JARS_DIR" -maxdepth 1 -name "paper-$VERSION-*.jar" -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | head -1 | cut -d' ' -f2-)"
+[ -n "$LATEST" ] || { echo "ОШИБКА: ядро не скачалось" >&2; exit 1; }
+
+ln -sfn "$LATEST" paper.jar
+echo "paper.jar -> $LATEST"

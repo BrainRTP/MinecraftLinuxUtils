@@ -1,0 +1,23 @@
+# Только то, что влияет на скрипты и на связку с серверами Paper.
+# Остальные ключи Velocity создаст сама, тут они опущены намеренно.
+
+config-version = "2.7"
+
+# Единственный порт, который смотрит наружу.
+bind = "0.0.0.0:25565"
+
+# Пиратский сервер. Обязано совпадать с online-mode обоих серверов Paper.
+online-mode = false
+
+# Секрет генерируем сами, в git не кладем:
+#   openssl rand -base64 32 > forwarding.secret && chmod 600 forwarding.secret
+player-info-forwarding-mode = "modern"
+forwarding-secret-file = "forwarding.secret"
+
+# Порты совпадают с server-port каждого сервера.
+# Оба слушают 127.0.0.1, снаружи к ним не подключиться.
+[servers]
+auth = "127.0.0.1:25566"
+main = "127.0.0.1:25567"
+
+try = ["auth"]

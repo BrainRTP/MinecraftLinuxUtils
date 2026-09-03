@@ -1,0 +1,7 @@
+# Список серверов для mcstart.sh и restart.sh.
+# Формат: имя:путь        Прокси ставим первой строкой.
+# Скопируйте в servers.conf и поправьте пути.
+
+velocity:/home/mc/proxy
+auth:/home/mc/authServer
+main:/home/mc/mainServer
