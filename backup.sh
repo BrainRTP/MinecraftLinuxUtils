@@ -9,19 +9,23 @@
 #   ./backup.sh main       только main
 #
 # Режим задается переменной MODE ниже. Для restic заполните RESTIC_REPO и RESTIC_PASSWORD_FILE.
+# Адрес вида rclone:секция:папка означает хранилище через rclone (например FTP провайдера):
+# доступы берутся из ~/.config/rclone/rclone.conf, restic сам поднимает и гасит rclone.
 # В cron:  0 4 * * * /home/mc/scripts/backup.sh >> /home/mc/scripts/backup.log 2>&1
 
 set -uo pipefail
 
 # ============ Настройки ============
-MODE="tar"                       # tar или restic
+MODE="restic"                    # tar или restic
 DEST="/var/backups/minecraft"    # куда складывать при MODE=tar
 KEEP_DAYS=7                      # сколько дней хранить при MODE=tar
 SESSION="${MC_SESSION:-minecraft}"
 SAVE_WAIT=10                     # сколько ждать после save-all, секунд
 
-RESTIC_REPO="${RESTIC_REPO:-}"                       # например s3:https://s3.example.com/mc-backup
-RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-}"     # файл с паролем репозитория, права 600
+RESTIC_REPO="${RESTIC_REPO:-rclone:backup:mc-backup}"                 # rclone:секция:папка или s3:https://...
+RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-$HOME/.restic-pass}"    # файл с паролем репозитория, права 600
+RCLONE_CONNECTIONS=4             # одновременных соединений, больше FTP провайдера обычно не дает
+PRUNE_WEEKDAY=7                  # день для prune: 1 понедельник, 7 воскресенье, пусто - каждый запуск
 
 # Что не тащим в копию по умолчанию. Логи и кеши восстанавливать незачем,
 # а весят прилично. Список дополняется, не редактируя скрипт:
@@ -50,12 +54,35 @@ die() { echo "ОШИБКА: $*" >&2; exit 1; }
 
 [ -f "$CONF" ] || die "нет $CONF. Скопируйте servers.conf.example"
 
+RESTIC_ARGS=()
+
 if [ "$MODE" = "restic" ]; then
     command -v restic >/dev/null || die "нет restic"
     [ -n "$RESTIC_REPO" ] || die "не задан RESTIC_REPO"
     [ -n "$RESTIC_PASSWORD_FILE" ] || die "не задан RESTIC_PASSWORD_FILE"
     [ -f "$RESTIC_PASSWORD_FILE" ] || die "не найден $RESTIC_PASSWORD_FILE"
+    [ "$(stat -c '%a' "$RESTIC_PASSWORD_FILE")" = "600" ] \
+        || log "ВНИМАНИЕ: у $RESTIC_PASSWORD_FILE права не 600"
     export RESTIC_REPOSITORY="$RESTIC_REPO" RESTIC_PASSWORD_FILE
+
+    # Репозиторий через rclone. Доступы лежат в его конфиге, в окружении ключей нет.
+    case "$RESTIC_REPO" in
+        rclone:*)
+            command -v rclone >/dev/null || die "репозиторий через rclone, а самого rclone нет"
+            RCLONE_CONF="${RCLONE_CONFIG:-$HOME/.config/rclone/rclone.conf}"
+            [ -f "$RCLONE_CONF" ] || die "не найден $RCLONE_CONF"
+            [ "$(stat -c '%a' "$RCLONE_CONF")" = "600" ] \
+                || log "ВНИМАНИЕ: у $RCLONE_CONF права не 600, пароль от хранилища читает кто угодно"
+            REMOTE="${RESTIC_REPO#rclone:}"
+            REMOTE="${REMOTE%%:*}"
+            grep -q "^\[$REMOTE\]" "$RCLONE_CONF" || die "в $RCLONE_CONF нет секции [$REMOTE]"
+            RESTIC_ARGS+=(-o "rclone.connections=$RCLONE_CONNECTIONS")
+            ;;
+    esac
+
+    # Хранилище проверяем до того, как трогать сервера. Иначе save-off окажется впустую.
+    restic "${RESTIC_ARGS[@]}" cat config >/dev/null 2>&1 \
+        || die "репозиторий $RESTIC_REPO недоступен. Проверьте rclone lsd ${REMOTE:-backup}: и restic init"
 fi
 
 EXCLUDE_CONF="$SCRIPT_DIR/backup-exclude.conf"
@@ -130,7 +157,7 @@ backup_tar() {
 backup_restic() {
     local name="$1" dir="$2" exfile="$3"
     log "$name: restic backup"
-    if restic backup "$dir" --tag "$name" --exclude-file="$exfile" --quiet; then
+    if restic "${RESTIC_ARGS[@]}" backup "$dir" --tag "$name" --exclude-file="$exfile" --quiet; then
         log "$name: готово"
         return 0
     fi
@@ -164,7 +191,14 @@ if [ "$MODE" = "tar" ]; then
     find "$DEST" -maxdepth 1 -name '*.tar.gz' -type f -mtime "+$KEEP_DAYS" -print -delete
 else
     log "Применяю политику хранения restic"
-    restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune --quiet || FAILED=1
+    FORGET_ARGS=(--keep-daily 7 --keep-weekly 4 --keep-monthly 6 --quiet)
+    # prune переписывает паки на хранилище, а по FTP это долго. Раз в неделю достаточно.
+    if [ -z "$PRUNE_WEEKDAY" ] || [ "$(date +%u)" = "$PRUNE_WEEKDAY" ]; then
+        FORGET_ARGS+=(--prune)
+    else
+        log "Сегодня без prune, только помечаю лишние копии"
+    fi
+    restic "${RESTIC_ARGS[@]}" forget "${FORGET_ARGS[@]}" || FAILED=1
 fi
 
 if [ "$FAILED" -ne 0 ]; then
@@ -173,6 +207,13 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 log "Все копии сняты"
-echo
-echo "Напоминание: копия на этой же машине спасает от кривого обновления, но не от"
-echo "смерти диска. Отправьте архивы на другую машину или используйте MODE=restic."
+
+if [ "$MODE" = "tar" ]; then
+    echo
+    echo "Напоминание: копия на этой же машине спасает от кривого обновления, но не от"
+    echo "смерти диска. Отправьте архивы на другую машину или используйте MODE=restic."
+else
+    echo
+    echo "Напоминание: бэкап, который ни разу не разворачивали, бэкапом не является."
+    echo "Раз в несколько месяцев: restic restore latest --target /tmp/proverka"
+fi
